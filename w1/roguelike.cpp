@@ -3,8 +3,10 @@
 #include "raylib.h"
 #include "stateMachine.h"
 #include "aiLibrary.h"
+#include <string>
+#include <iostream>
 
-static void add_patrol_attack_flee_sm(flecs::entity entity)
+void add_patrol_attack_flee_sm(flecs::entity entity)
 {
   entity.get([](StateMachine &sm)
   {
@@ -24,7 +26,7 @@ static void add_patrol_attack_flee_sm(flecs::entity entity)
   });
 }
 
-static void add_patrol_flee_sm(flecs::entity entity)
+void add_patrol_flee_sm(flecs::entity entity)
 {
   entity.get([](StateMachine &sm)
   {
@@ -36,7 +38,7 @@ static void add_patrol_flee_sm(flecs::entity entity)
   });
 }
 
-static void add_attack_sm(flecs::entity entity)
+void add_attack_sm(flecs::entity entity)
 {
   entity.get([](StateMachine &sm)
   {
@@ -44,7 +46,130 @@ static void add_attack_sm(flecs::entity entity)
   });
 }
 
-static flecs::entity create_monster(flecs::world &ecs, int x, int y, Color color)
+void add_slime_sm(flecs::entity entity)
+{
+  entity.insert([&](const Hitpoints &hitpoints, StateMachine &sm)
+  {
+    float hp50percent = hitpoints.hitpoints / 2;
+    float hp25percent = hitpoints.hitpoints / 4;
+
+    int patrol = sm.addState(create_patrol_state(3.0f));
+    int moveToEnemy = sm.addState(create_move_to_enemy_state());
+    int fleeFromEnemy = sm.addState(create_flee_from_enemy_state());
+    int spawn = sm.addState(create_spawn_state());
+
+    sm.addTransition(create_enemy_available_transition(3.f), patrol, moveToEnemy);
+    sm.addTransition(create_negate_transition(create_enemy_available_transition(5.f)), moveToEnemy, patrol);
+
+    sm.addTransition(create_and_transition(create_hitpoints_less_than_transition(hp25percent), create_enemy_available_transition(5.f)),
+                     moveToEnemy, fleeFromEnemy);
+    sm.addTransition(create_and_transition(create_hitpoints_less_than_transition(hp25percent), create_enemy_available_transition(5.f)),
+                     patrol, fleeFromEnemy);
+
+    sm.addTransition(create_negate_transition(create_enemy_available_transition(7.f)), fleeFromEnemy, patrol);
+
+    // to spawn
+    sm.addTransition(create_and_transition(create_hitpoints_less_than_transition(hp50percent), create_can_spawn_transition()), patrol, spawn);
+    sm.addTransition(create_and_transition(create_hitpoints_less_than_transition(hp50percent), create_can_spawn_transition()), fleeFromEnemy, spawn);
+    sm.addTransition(create_and_transition(create_hitpoints_less_than_transition(hp50percent), create_can_spawn_transition()), moveToEnemy, spawn);
+
+    // from spawn
+    sm.addTransition(create_and_transition(create_hitpoints_less_than_transition(hp25percent), create_enemy_available_transition(5.f)), spawn, fleeFromEnemy);
+    sm.addTransition(create_negate_transition(create_enemy_available_transition(3.f)), spawn, patrol);
+    sm.addTransition(create_enemy_available_transition(3.f), spawn, moveToEnemy);
+  });
+}
+
+
+void add_archer_sm(flecs::entity entity)
+{
+  entity.insert([&](StateMachine &sm)
+  { 
+    int moveToEnemy = sm.addState(create_move_to_enemy_state());
+    int attackEnemy = sm.addState(create_attack_enemy_state());
+    int fleeFromEnemy = sm.addState(create_flee_from_enemy_state());
+
+    sm.addTransition(create_and_transition(
+                      create_enemy_available_transition(5.f),
+                      create_negate_transition(create_enemy_available_transition(3.f))), moveToEnemy, attackEnemy);
+    sm.addTransition(create_enemy_available_transition(3.f),                             moveToEnemy, fleeFromEnemy);
+
+    sm.addTransition(create_negate_transition(create_enemy_available_transition(5.f)), attackEnemy, moveToEnemy);
+    sm.addTransition(create_enemy_available_transition(3.f),                           attackEnemy, fleeFromEnemy);
+
+    sm.addTransition(create_negate_transition(create_enemy_available_transition(7.f)), fleeFromEnemy, moveToEnemy);
+  });
+}
+
+void add_healer_sm(flecs::entity entity)
+{
+  entity.insert([&](StateMachine &sm)
+  { 
+    int moveToPlayer = sm.addState(create_move_to_healer_target_state());
+    int moveToEnemy = sm.addState(create_move_to_enemy_state());
+    int healPlayer = sm.addState(create_heal_target_state());
+
+    sm.addTransition(create_and_transition(
+                      create_enemy_available_transition(5.f),
+                      create_negate_transition(
+                        create_and_transition(
+                          create_target_hitpoints_less_than_transition(50),
+                          create_cooldown_transition()))), moveToPlayer, moveToEnemy);
+    sm.addTransition(create_and_transition(
+                      create_target_available_transition(2.f),
+                      create_and_transition(
+                        create_target_hitpoints_less_than_transition(50),
+                        create_cooldown_transition())),    moveToPlayer, healPlayer);
+
+    sm.addTransition(create_negate_transition(
+                      create_enemy_available_transition(5.f)), moveToEnemy, moveToPlayer);
+    sm.addTransition(create_and_transition(
+                      create_negate_transition(
+                        create_target_available_transition(2.f)),
+                      create_and_transition(
+                        create_target_hitpoints_less_than_transition(50.f),
+                        create_cooldown_transition())),       moveToEnemy, moveToEnemy);
+    sm.addTransition(create_and_transition(
+                      create_target_available_transition(2.f),
+                      create_and_transition(
+                        create_target_hitpoints_less_than_transition(50.f),
+                        create_cooldown_transition())),       moveToEnemy, healPlayer);
+
+    sm.addTransition(create_enemy_available_transition(5.f),   healPlayer, moveToEnemy);
+    sm.addTransition(create_negate_transition(
+                      create_enemy_available_transition(5.f)), healPlayer, moveToPlayer);
+  });
+}
+
+void add_crafter_sm(flecs::entity entity)
+{
+  entity.insert([&](StateMachine &sm)
+  { 
+    StateMachine* craftSM = new StateMachine();
+    int moveToResources = craftSM->addState(create_move_to_position_state({-14, 1}));
+    int takeResources = craftSM->addState(create_take_resource_state());
+    int moveToCraft = craftSM->addState(create_move_to_position_state({-8, 1}));
+    int craft = craftSM->addState(create_craft_state());
+
+    craftSM->addTransition(create_position_reached_transition({-14,1}),
+                             moveToResources, takeResources);
+    craftSM->addTransition(create_always_transition(),
+                             takeResources, moveToCraft);    
+    craftSM->addTransition(create_position_reached_transition({-8,1}),
+                             moveToCraft, craft);
+    craftSM->addTransition(create_always_transition(),
+                             craft, moveToResources);
+
+    int hierarchical = sm.addState(create_hierarchical_state(craftSM));
+    int fleeFromEnemy = sm.addState(create_flee_from_enemy_state());
+
+    sm.addTransition(create_enemy_available_transition(3.f), hierarchical, fleeFromEnemy);
+    sm.addTransition(create_negate_transition(
+                      create_enemy_available_transition(7.f)), fleeFromEnemy, hierarchical);
+  });
+}
+
+flecs::entity create_monster(flecs::world &ecs, int x, int y, Color color, float hitpoints = 100.f)
 {
   return ecs.entity()
     .set(Position{x, y})
@@ -59,7 +184,35 @@ static flecs::entity create_monster(flecs::world &ecs, int x, int y, Color color
     .set(MeleeDamage{20.f});
 }
 
-static void create_player(flecs::world &ecs, int x, int y)
+flecs::entity create_slime(flecs::world &ecs, int x, int y, float hitpoints = 100.f, int numSpawn = 1)
+{
+  return create_monster(ecs, x, y, GetColor(0x355e3bff), hitpoints)
+        .set(Spawner{numSpawn});
+}
+
+flecs::entity create_archer(flecs::world &ecs, int x, int y)
+{
+  return create_monster(ecs, x, y, GetColor(0xc9c9c9cff), 100.f)
+        .set(RangeAttack{});
+}
+
+flecs::entity create_healer(flecs::world &ecs, int x, int y, flecs::entity player)
+{
+  return ecs.entity()
+        .set(Position{x, y})
+        .set(MovePos{x, y})
+        .set(Hitpoints{100.f})
+        .set(GetColor(0xf5e8cbff))
+        .set(Action{EA_NOP})
+        .set(Team{0})
+        .set(NumActions{1, 0})
+        .set(MeleeDamage{25.f})
+        .set(StateMachine{})
+        .set(Healer{.heal = 50.f, .currentCooldown = 0, .cooldown = 10, .target = player});
+}
+
+
+void create_player(flecs::world &ecs, int x, int y)
 {
   ecs.entity("player")
     .set(Position{x, y})
@@ -71,10 +224,10 @@ static void create_player(flecs::world &ecs, int x, int y)
     .set(Team{0})
     .set(PlayerInput{})
     .set(NumActions{2, 0})
-    .set(MeleeDamage{50.f});
+    .set(MeleeDamage{25.f});
 }
 
-static void create_heal(flecs::world &ecs, int x, int y, float amount)
+void create_heal(flecs::world &ecs, int x, int y, float amount)
 {
   ecs.entity()
     .set(Position{x, y})
@@ -82,7 +235,7 @@ static void create_heal(flecs::world &ecs, int x, int y, float amount)
     .set(GetColor(0x44ff44ff));
 }
 
-static void create_powerup(flecs::world &ecs, int x, int y, float amount)
+void create_powerup(flecs::world &ecs, int x, int y, float amount)
 {
   ecs.entity()
     .set(Position{x, y})
@@ -135,16 +288,20 @@ void init_roguelike(flecs::world &ecs)
 {
   register_roguelike_systems(ecs);
 
-  add_patrol_attack_flee_sm(create_monster(ecs, 5, 5, GetColor(0xee00eeff)));
-  add_patrol_attack_flee_sm(create_monster(ecs, 10, -5, GetColor(0xee00eeff)));
-  add_patrol_flee_sm(create_monster(ecs, -5, -5, GetColor(0x111111ff)));
-  add_attack_sm(create_monster(ecs, -5, 5, GetColor(0x880000ff)));
-
+  // add_patrol_attack_flee_sm(create_monster(ecs, 5, 5, GetColor(0xee00eeff)));
+  // add_patrol_attack_flee_sm(create_monster(ecs, 10, -5, GetColor(0xee00eeff)));
+  // add_patrol_flee_sm(create_monster(ecs, -5, -5, GetColor(0x111111ff)));
+  // add_attack_sm(create_monster(ecs, -5, 5, GetColor(0x880000ff)));
+  add_slime_sm(create_slime(ecs, -8, 8));
+  add_slime_sm(create_slime(ecs, 8, 8));
+  add_archer_sm(create_archer(ecs, 8, -8));
+  add_crafter_sm(create_monster(ecs, -5, 1, GetColor(0x402d27ff)));
   create_player(ecs, 0, 0);
+  add_healer_sm(create_healer(ecs, 2, 2, ecs.entity("player")));
 
-  create_powerup(ecs, 7, 7, 10.f);
-  create_powerup(ecs, 10, -6, 10.f);
-  create_powerup(ecs, 10, -4, 10.f);
+  // create_powerup(ecs, 7, 7, 10.f);
+  // create_powerup(ecs, 10, -6, 10.f);
+  // create_powerup(ecs, 10, -4, 10.f);
 
   create_heal(ecs, -5, -5, 50.f);
   create_heal(ecs, -5, 5, 50.f);
@@ -190,6 +347,8 @@ static void process_actions(flecs::world &ecs)
 {
   static auto processActions = ecs.query<Action, Position, MovePos, const MeleeDamage, const Team>();
   static auto checkAttacks = ecs.query<const MovePos, Hitpoints, const Team>();
+  static auto doAttacks = ecs.query<const Action, const RangeAttack>();
+  static auto doHeals = ecs.query<const Action, Healer>();
   // Process all actions
   ecs.defer([&]
   {
@@ -210,6 +369,29 @@ static void process_actions(flecs::world &ecs)
         a.action = EA_NOP;
       else
         mpos = nextPos;
+    });
+    // range attacks
+    doAttacks.each([&](const Action &a, const RangeAttack &range_attack) {
+      if (a.action == EA_ATTACK && range_attack.target != flecs::entity::null()) {
+        range_attack.target.insert([&](Hitpoints &hp) {
+          hp.hitpoints -= range_attack.damage;
+        });
+      }
+    });
+
+    doHeals.each([&](const Action &a, Healer &healer) {
+      std::cout << "\ndoHEAL" << a.action << "\n";
+      if (a.action == EA_HEAL && healer.target != flecs::entity::null()) {
+        std::cout << "\nHEAL\n";
+        healer.target.insert([&](Hitpoints &hp) {
+          hp.hitpoints += healer.heal;
+        });
+        healer.currentCooldown = 10;
+      } else {
+         if (healer.currentCooldown > 0) {
+           healer.currentCooldown -= 1;
+         }
+      }
     });
     // now move
     processActions.each([&](flecs::entity entity, Action &a, Position &pos, MovePos &mpos, const MeleeDamage &, const Team&)

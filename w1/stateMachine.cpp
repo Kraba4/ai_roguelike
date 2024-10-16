@@ -1,4 +1,5 @@
 #include "stateMachine.h"
+#include <iostream>
 
 StateMachine::~StateMachine()
 {
@@ -13,6 +14,7 @@ StateMachine::~StateMachine()
 
 void StateMachine::act(float dt, flecs::world &ecs, flecs::entity entity)
 {
+  std::cout << curStateIdx <<  ' ' << states.size();
   if (curStateIdx < states.size())
   {
     for (const std::pair<StateTransition*, int> &transition : transitions[curStateIdx])
@@ -42,3 +44,7 @@ void StateMachine::addTransition(StateTransition *trans, int from, int to)
   transitions[from].push_back(std::make_pair(trans, to));
 }
 
+ void StateMachine::setCurStateIdx(int stateIdx) 
+ {
+  curStateIdx = stateIdx;
+ }

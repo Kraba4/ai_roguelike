@@ -59,7 +59,8 @@ enum Actions
   EA_MOVE_DOWN,
   EA_MOVE_UP,
   EA_MOVE_END,
-  EA_ATTACK = EA_MOVE_END,
+  EA_ATTACK,
+  EA_HEAL,
   EA_NUM
 };
 
@@ -79,6 +80,24 @@ struct MeleeDamage
   float damage = 2.f;
 };
 
+struct Spawner
+{
+  int numSpawn = 1;
+};
+
+struct RangeAttack
+{
+  float damage = 15.f;
+  flecs::entity target = flecs::entity::null();
+};
+
+struct Healer 
+{
+  float heal = 50;
+  int currentCooldown = 10;
+  int cooldown = 10;
+  flecs::entity target = flecs::entity::null();
+};
 struct HealAmount
 {
   float amount = 0.f;

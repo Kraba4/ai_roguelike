@@ -4,14 +4,10 @@
 #include "raylib.h"
 #include <cfloat>
 #include <cmath>
+#include <iostream>
 
-class AttackEnemyState : public State
-{
-public:
-  void enter() const override {}
-  void exit() const override {}
-  void act(float/* dt*/, flecs::world &/*ecs*/, flecs::entity /*entity*/) const override {}
-};
+void add_slime_sm(flecs::entity entity);
+flecs::entity create_slime(flecs::world &ecs, int x, int y, float hitpoints = 100.f, int numSpawn = 1);
 
 template<typename T>
 T sqr(T a){ return a*a; }
@@ -63,7 +59,7 @@ static void on_closest_enemy_pos(flecs::world &ecs, flecs::entity entity, Callab
       }
     });
     if (ecs.is_valid(closestEnemy))
-      c(a, pos, closestPos);
+      c(a, pos, closestEnemy);
   });
 }
 
@@ -74,12 +70,13 @@ public:
   void exit() const override {}
   void act(float/* dt*/, flecs::world &ecs, flecs::entity entity) const override
   {
-    on_closest_enemy_pos(ecs, entity, [&](Action &a, const Position &pos, const Position &enemy_pos)
+    on_closest_enemy_pos(ecs, entity, [&](Action &a, const Position &pos, flecs::entity closestEnemy)
     {
-      a.action = move_towards(pos, enemy_pos);
+      a.action = move_towards(pos, *closestEnemy.get<Position>());
     });
   }
 };
+
 
 class FleeFromEnemyState : public State
 {
@@ -89,9 +86,9 @@ public:
   void exit() const override {}
   void act(float/* dt*/, flecs::world &ecs, flecs::entity entity) const override
   {
-    on_closest_enemy_pos(ecs, entity, [&](Action &a, const Position &pos, const Position &enemy_pos)
+    on_closest_enemy_pos(ecs, entity, [&](Action &a, const Position &pos, flecs::entity closestEnemy)
     {
-      a.action = inverse_move(move_towards(pos, enemy_pos));
+      a.action = inverse_move(move_towards(pos, *closestEnemy.get<Position>()));
     });
   }
 };
@@ -124,6 +121,123 @@ public:
   void enter() const override {}
   void exit() const override {}
   void act(float/* dt*/, flecs::world &ecs, flecs::entity entity) const override {}
+};
+
+class SpawnState : public State
+{
+public:
+  void enter() const override {}
+  void exit() const override {}
+  void act(float/* dt*/, flecs::world &ecs, flecs::entity entity) const override {
+    entity.insert([](Spawner &spawner, const Position &pos) {
+      spawner.numSpawn -= 1;
+    });
+    entity.insert([&](const Position &pos, const Hitpoints &hitpoints) {
+      add_slime_sm(create_slime(ecs, pos.x + 1, pos.y + 1, hitpoints.hitpoints, 0));
+    });
+  }
+};
+
+class AttackEnemyState : public State
+{
+public:
+  void enter() const override {}
+  void exit() const override {}
+  void act(float/* dt*/, flecs::world &ecs, flecs::entity entity) const override {
+    on_closest_enemy_pos(ecs, entity, [&](Action &a, const Position &pos, flecs::entity closestEnemy)
+    {
+      a.action = EA_ATTACK;
+      entity.insert([&](RangeAttack &range_attack) {
+        range_attack.target = closestEnemy;
+      });
+    });
+  }
+};
+
+class MoveToHealerTargetState : public State
+{
+public:
+  void enter() const override {}
+  void exit() const override {}
+  void act(float/* dt*/, flecs::world &ecs, flecs::entity entity) const override
+  {
+    entity.insert([](Action& a, const Healer& healer, const Position& pos) {
+      a.action = move_towards(pos, *healer.target.get<Position>());
+    });
+  }
+};
+
+class HealTargetState : public State
+{
+public:
+  void enter() const override {}
+  void exit() const override {}
+  void act(float/* dt*/, flecs::world &ecs, flecs::entity entity) const override
+  {
+    std::cout << "\nheal act\n";
+    entity.insert([](Action& a) {
+      a.action = EA_HEAL;
+    });
+  }
+};
+
+class HierarchicalState : public State
+{
+  StateMachine* sm;
+public:
+  HierarchicalState(StateMachine* sm) : sm(sm) {};
+  ~HierarchicalState() { delete sm; };
+  void enter() const override {
+    sm->setCurStateIdx(0);
+  }
+  void exit() const override {}
+  void act(float/* dt*/, flecs::world &ecs, flecs::entity entity) const override
+  {
+    sm->act(0.f, ecs, entity);
+  }
+};
+
+class MoveToPositionState : public State
+{
+  Position position;
+public:
+  MoveToPositionState(const Position& position) : position(position) {};
+  void enter() const override {}
+  void exit() const override {}
+  void act(float/* dt*/, flecs::world &ecs, flecs::entity entity) const override
+  {
+    entity.insert([&](Action& a, const Position& pos) {
+      a.action = move_towards(pos, position);
+    });
+  }
+};
+
+class TakeResourceState : public State
+{
+public:
+  TakeResourceState() {};
+  void enter() const override {}
+  void exit() const override {}
+  void act(float/* dt*/, flecs::world &ecs, flecs::entity entity) const override
+  {
+    entity.insert([&](Action& a, const Position& pos) {
+      a.action = EA_NOP;
+    });
+  }
+};
+
+class CraftState : public State
+{
+public:
+  CraftState() {};
+  void enter() const override {}
+  void exit() const override {}
+  void act(float/* dt*/, flecs::world &ecs, flecs::entity entity) const override
+  {
+    entity.insert([&](Action& a, const Position& pos) {
+      a.action = EA_NOP;
+    });
+  }
 };
 
 class EnemyAvailableTransition : public StateTransition
@@ -205,6 +319,92 @@ public:
   }
 };
 
+class CanSpawnTransition : public StateTransition
+{
+public:
+  CanSpawnTransition(){}
+  bool isAvailable(flecs::world &ecs, flecs::entity entity) const override
+  {
+    bool canSpawn;
+    entity.get([&](const Spawner &spawner)
+    {
+      canSpawn = spawner.numSpawn > 0;
+    });
+    return canSpawn;
+  }
+};
+
+class HealerTargetHitpointsLessThanTransition : public StateTransition
+{
+  float threshold;
+public:
+  HealerTargetHitpointsLessThanTransition(float in_threshold) : threshold(in_threshold) {}
+  bool isAvailable(flecs::world &ecs, flecs::entity entity) const override
+  {
+    bool hitpointsThresholdReached = false;
+    entity.get([&](const Healer& healer){
+       hitpointsThresholdReached |= healer.target.get<Hitpoints>()->hitpoints < threshold;
+    });
+    return hitpointsThresholdReached;
+  }
+};
+
+
+class CooldownTransition : public StateTransition
+{
+public:
+  CooldownTransition() {}
+  bool isAvailable(flecs::world &ecs, flecs::entity entity) const override
+  {
+    bool cooldownReady = false;
+    entity.get([&](const Healer& healer){
+       cooldownReady |= healer.currentCooldown == 0;
+    });
+    return cooldownReady;
+  }
+};
+
+
+class TargetAvaibleTransition : public StateTransition
+{
+  float distance;
+public:
+  TargetAvaibleTransition(float distance) : distance(distance) {}
+  bool isAvailable(flecs::world &ecs, flecs::entity entity) const override
+  {
+    bool targetNear = false;
+    entity.get([&](const Position &pos, const Healer &healer)
+    {
+        targetNear |= dist(pos, *healer.target.get<Position>()) < distance;
+    });
+    return targetNear;
+  }
+};
+
+class PositionReachedTransition : public StateTransition
+{
+  Position position;
+public:
+  PositionReachedTransition(const Position& position) : position(position) {}
+  bool isAvailable(flecs::world &ecs, flecs::entity entity) const override
+  {
+    bool targetNear = false;
+    entity.get([&](const Position &pos)
+    {
+        targetNear |= dist(pos, position) <= 1.f;
+    });
+    return targetNear;
+  }
+};
+
+class AlwaysTransition : public StateTransition
+{
+public:
+  bool isAvailable(flecs::world &ecs, flecs::entity entity) const override
+  {
+    return true;
+  }
+};
 
 // states
 State *create_attack_enemy_state()
@@ -232,6 +432,34 @@ State *create_nop_state()
   return new NopState();
 }
 
+State *create_spawn_state()
+{
+  return new SpawnState();
+}
+
+State *create_move_to_healer_target_state() {
+  return new MoveToHealerTargetState();
+}
+
+State *create_heal_target_state() {
+  return new HealTargetState();
+}
+
+State *create_hierarchical_state(StateMachine* sm) {
+  return new HierarchicalState(sm);
+}
+
+State *create_move_to_position_state(const Position& position) {
+  return new MoveToPositionState(position);
+}
+
+State *create_take_resource_state() {
+  return new TakeResourceState();
+}
+
+State *create_craft_state() {
+  return new CraftState();
+}
 // transitions
 StateTransition *create_enemy_available_transition(float dist)
 {
@@ -257,3 +485,27 @@ StateTransition *create_and_transition(StateTransition *lhs, StateTransition *rh
   return new AndTransition(lhs, rhs);
 }
 
+StateTransition *create_can_spawn_transition()
+{
+  return new CanSpawnTransition();
+}
+
+StateTransition *create_target_hitpoints_less_than_transition(float thres) {
+  return new HealerTargetHitpointsLessThanTransition(thres);
+}
+
+StateTransition *create_cooldown_transition() {
+  return new CooldownTransition();
+}
+
+StateTransition *create_target_available_transition(float dist) {
+  return new TargetAvaibleTransition(dist);
+}
+
+StateTransition *create_position_reached_transition(Position position) {
+  return new PositionReachedTransition(position);
+}
+
+StateTransition *create_always_transition() {
+  return new AlwaysTransition();
+}
