@@ -5,6 +5,7 @@
 #include "aiLibrary.h"
 #include "blackboard.h"
 #include "math.h"
+#include <iostream>
 
 static void create_fuzzy_monster_beh(flecs::entity e)
 {
@@ -19,18 +20,18 @@ static void create_fuzzy_monster_beh(flecs::entity e)
         [](Blackboard &bb)
         {
           const float hp = bb.get<float>("hp");
-          const float enemyDist = bb.get<float>("enemyDist");
+          const float enemyDist = bb.get<float>("closest_enemy_dist");
           return (100.f - hp) * 5.f - 50.f * enemyDist;
         }
       ),
       std::make_pair(
         sequence({
           find_enemy(e, 3.f, "attack_enemy"),
-          move_to_entity(e, "attack_enemy")
+          move_to_entity(e, 0, "attack_enemy")
         }),
         [](Blackboard &bb)
         {
-          const float enemyDist = bb.get<float>("enemyDist");
+          const float enemyDist = bb.get<float>("closest_enemy_dist");
           return 100.f - 10.f * enemyDist;
         }
       ),
@@ -54,6 +55,100 @@ static void create_fuzzy_monster_beh(flecs::entity e)
   e.set(BehaviourTree{root});
 }
 
+static void create_explorer_monster_beh(flecs::entity e)
+{
+  e.set(Blackboard{});
+  BehNode *root =
+    utility_selector({
+      std::make_pair(
+        sequence({
+          is_entity_near(e, 4.f, "closest_enemy"),
+          flee(e, "closest_enemy")
+        }),
+        [](Blackboard &bb)
+        {
+          flecs::entity closestEnemy = bb.get<flecs::entity>("closest_enemy");
+          if (!closestEnemy.is_valid()) {
+            return 0.f;
+          }
+          const float hp = bb.get<float>("hp");
+          const float enemyDist = bb.get<float>("closest_enemy_dist");
+          return (100.f - hp) * 5.0f - 50.f * enemyDist;
+        }
+      ),
+
+      std::make_pair(
+        sequence({
+          is_entity_near(e, 3.f, "closest_enemy"),
+          move_to_entity(e, 0, "closest_enemy")
+        }),
+        [](Blackboard &bb)
+        {
+          flecs::entity closestEnemy = bb.get<flecs::entity>("closest_enemy");
+          if (!closestEnemy.is_valid()) {
+            return 0.f;
+          }
+          const float enemyDist = bb.get<float>("closest_enemy_dist");
+          return 100.f - 15.f * enemyDist;
+        }
+      ),
+
+      std::make_pair(
+        sequence({
+          is_entity_near(e, 8.f, "closest_item"),
+          move_to_entity(e, 0, "closest_item")
+        }),
+        [](Blackboard &bb)
+        {
+          flecs::entity closestItem = bb.get<flecs::entity>("closest_item");
+          if (!closestItem.is_valid()) {
+            return 0.f;
+          }
+          const float itemDist = bb.get<float>("closest_item_dist");
+          return 100.f - 12.f * itemDist; // prefers to take items rather than attack to show that inertia work
+        }
+      ),
+
+      std::make_pair(
+        sequence( {
+          is_entity_low_hp(e, 90.f, "closest_low_hp_ally"),
+          is_entity_near(e, 6.f, "closest_low_hp_ally"),
+          move_to_entity(e, 2, "closest_low_hp_ally"),
+          patch_up_target(e, 90.f, "closest_low_hp_ally")
+        }),
+        [](Blackboard &bb)
+        {
+          flecs::entity closestLowHpAlly = bb.get<flecs::entity>("closest_low_hp_ally");
+          if (!closestLowHpAlly.is_valid()) {
+            return 0.f;
+          }
+          const float allyHP = closestLowHpAlly.get<Hitpoints>()->hitpoints;
+          const float allyDist = bb.get<float>("closest_low_hp_ally_dist");
+          return (allyHP < 90.f) * (100.f - 10.f * allyDist);
+        }
+      ),
+      
+      std::make_pair(
+        sequence({
+          move_to_entity(e, 3, "closest_ally"),
+          random_move()
+        }),
+        [](Blackboard &bb)
+        {
+          flecs::entity closestAlly = bb.get<flecs::entity>("closest_ally");
+          if (!closestAlly.is_valid()) {
+            return 0.f;
+          }
+          const float allyDist = bb.get<float>("closest_ally_dist");
+          return 7.f * allyDist + 10.f;
+        }
+      )
+    });
+  e.add<WorldInfoGatherer>();
+  e.set(BehaviourTree{root});
+  e.add<Collector>();
+}
+
 static void create_minotaur_beh(flecs::entity e)
 {
   e.set(Blackboard{});
@@ -66,7 +161,7 @@ static void create_minotaur_beh(flecs::entity e)
       }),
       sequence({
         find_enemy(e, 3.f, "attack_enemy"),
-        move_to_entity(e, "attack_enemy")
+        move_to_entity(e, 0, "attack_enemy")
       }),
       patrol(e, 2.f, "patrol_pos")
     });
@@ -96,7 +191,7 @@ static void create_player(flecs::world &ecs, int x, int y, const char *texture_s
   ecs.entity("player")
     .set(Position{x, y})
     .set(MovePos{x, y})
-    .set(Hitpoints{100.f})
+    .set(Hitpoints{200.f})
     //.set(Color{0xee, 0xee, 0xee, 0xff})
     .set(Action{EA_NOP})
     .add<IsPlayer>()
@@ -105,7 +200,7 @@ static void create_player(flecs::world &ecs, int x, int y, const char *texture_s
     .set(NumActions{2, 0})
     .set(Color{255, 255, 255, 255})
     .add<TextureSource>(textureSrc)
-    .set(MeleeDamage{50.f});
+    .set(MeleeDamage{25.f});
 }
 
 static void create_heal(flecs::world &ecs, int x, int y, float amount)
@@ -133,6 +228,7 @@ static void register_roguelike_systems(flecs::world &ecs)
       bool right = IsKeyDown(KEY_RIGHT);
       bool up = IsKeyDown(KEY_UP);
       bool down = IsKeyDown(KEY_DOWN);
+      bool space = IsKeyDown(KEY_SPACE);
       if (left && !inp.left)
         a.action = EA_MOVE_LEFT;
       if (right && !inp.right)
@@ -141,10 +237,13 @@ static void register_roguelike_systems(flecs::world &ecs)
         a.action = EA_MOVE_UP;
       if (down && !inp.down)
         a.action = EA_MOVE_DOWN;
+      if (space && !inp.space)
+        a.action = EA_AFK;
       inp.left = left;
       inp.right = right;
       inp.up = up;
       inp.down = down;
+      inp.space = space;
     });
   ecs.system<const Position, const Color>()
     .without<TextureSource>(flecs::Wildcard)
@@ -192,9 +291,9 @@ void init_roguelike(flecs::world &ecs)
       });
 
   create_fuzzy_monster_beh(create_monster(ecs, 5, 5, Color{0xee, 0x00, 0xee, 0xff}, "minotaur_tex"));
-  create_fuzzy_monster_beh(create_monster(ecs, 10, -5, Color{0xee, 0x00, 0xee, 0xff}, "minotaur_tex"));
-  create_fuzzy_monster_beh(create_monster(ecs, -5, -5, Color{0x11, 0x11, 0x11, 0xff}, "minotaur_tex"));
-  create_fuzzy_monster_beh(create_monster(ecs, -5, 5, Color{0, 255, 0, 255}, "minotaur_tex"));
+  create_explorer_monster_beh(create_monster(ecs, 10, -5, Color{0, 255, 0, 255}, "minotaur_tex"));
+  create_explorer_monster_beh(create_monster(ecs, -5, -5, Color{0, 255, 0, 255}, "minotaur_tex"));
+  create_explorer_monster_beh(create_monster(ecs, -5, 5, Color{0, 255, 0, 255}, "minotaur_tex"));
 
   create_player(ecs, 0, 0, "swordsman_tex");
 
@@ -263,6 +362,7 @@ static void process_actions(flecs::world &ecs)
 {
   static auto processActions = ecs.query<Action, Position, MovePos, const MeleeDamage, const Team>();
   static auto processHeals = ecs.query<Action, Hitpoints>();
+  static auto processTargetHeals = ecs.query<Action, Hitpoints, Blackboard>();
   static auto checkAttacks = ecs.query<const MovePos, Hitpoints, const Team>();
   // Process all actions
   ecs.defer([&]
@@ -275,6 +375,17 @@ static void process_actions(flecs::world &ecs)
       push_to_log(ecs, "Monster healed itself");
       hp.hitpoints += 10.f;
 
+    });
+    processTargetHeals.each([&](Action &a, Hitpoints &hp, Blackboard &bb)
+    {
+      if (a.action != EA_HEAL_TARGET)
+        return;
+      a.action = EA_NOP;
+      push_to_log(ecs, "Monster healed target");
+      flecs::entity target = bb.get<flecs::entity>("closest_low_hp_ally");
+      target.insert([&](Hitpoints& hp){
+        hp.hitpoints += 10.f;
+      });
     });
     processActions.each([&](flecs::entity entity, Action &a, Position &pos, MovePos &mpos, const MeleeDamage &dmg, const Team &team)
     {
@@ -318,6 +429,7 @@ static void process_actions(flecs::world &ecs)
   static auto playerPickup = ecs.query<const IsPlayer, const Position, Hitpoints, MeleeDamage>();
   static auto healPickup = ecs.query<const Position, const HealAmount>();
   static auto powerupPickup = ecs.query<const Position, const PowerupAmount>();
+  static auto collectorPickup = ecs.query<const Collector, const Position, Hitpoints, MeleeDamage>();
   ecs.defer([&]
   {
     playerPickup.each([&](const IsPlayer&, const Position &pos, Hitpoints &hp, MeleeDamage &dmg)
@@ -339,6 +451,27 @@ static void process_actions(flecs::world &ecs)
         }
       });
     });
+    collectorPickup.each([&](Collector, const Position &pos, Hitpoints &hp, MeleeDamage &dmg)
+    {
+      healPickup.each([&](flecs::entity entity, const Position &ppos, const HealAmount &amt)
+      {
+        if (pos == ppos)
+        {
+          hp.hitpoints += amt.amount / 2;
+          entity.destruct();
+          push_to_log(ecs, "Monster take heal");
+        }
+      });
+      powerupPickup.each([&](flecs::entity entity, const Position &ppos, const PowerupAmount &amt)
+      {
+        if (pos == ppos)
+        {
+          dmg.damage += amt.amount / 2;
+          entity.destruct();
+           push_to_log(ecs, "Monster take powerup");
+        }
+      });
+    });
   });
 }
 
@@ -356,29 +489,108 @@ static void gather_world_info(flecs::world &ecs)
                                           const Position, const Hitpoints,
                                           const WorldInfoGatherer,
                                           const Team>();
-  static auto alliesQuery = ecs.query<const Position, const Team>();
-  gatherWorldInfo.each([&](Blackboard &bb, const Position &pos, const Hitpoints &hp,
+  static auto alliesQuery = ecs.query<const Position, const Team, const Hitpoints>();
+  gatherWorldInfo.each([&](flecs::entity entity, Blackboard &bb, const Position &pos, const Hitpoints &hp,
                            WorldInfoGatherer, const Team &team)
   {
     // first gather all needed names (without cache)
     push_info_to_bb(bb, "hp", hp.hitpoints);
     float numAllies = 0; // note float
-    float closestEnemyDist = 100.f;
-    alliesQuery.each([&](const Position &apos, const Team &ateam)
+
+    // find closest enemy and closest ally
+    float closestEnemyDist = 1000.f;
+    flecs::entity closestEnemy;
+
+    float closestAllyDist = 1000.f;
+    flecs::entity closestAlly;
+
+    float closestLowHpAllyDist = 1000.f;
+    flecs::entity closestLowHpAlly;
+
+    alliesQuery.each([&](flecs::entity other_entity, const Position &apos, const Team &ateam, const Hitpoints &other_hp)
     {
+      if (entity == other_entity) {
+        return;
+      }
       constexpr float limitDist = 5.f;
       if (team.team == ateam.team && dist_sq(pos, apos) < sqr(limitDist))
         numAllies += 1.f;
+      
+      const float entityDist = dist(pos, apos);
       if (team.team != ateam.team)
       {
-        const float enemyDist = dist(pos, apos);
-        if (enemyDist < closestEnemyDist)
-          closestEnemyDist = enemyDist;
+        if (entityDist < closestEnemyDist) {
+          closestEnemyDist = entityDist;
+          closestEnemy = other_entity;
+        }
+      } else 
+      {
+        if (entityDist < closestAllyDist) {
+          closestAllyDist = entityDist;
+          closestAlly = other_entity;
+        }
+
+        // mb not good
+        const float allyHp = other_hp.hitpoints;
+        if (allyHp < 90.f && entityDist < closestLowHpAllyDist) {
+          closestLowHpAllyDist = entityDist;
+          closestLowHpAlly = other_entity;
+        }
       }
     });
+
+    
+    // find closest item (heal or powerup)
+    float closestItemDist = 1000.f;
+    flecs::entity closestItem;
+    static auto healQuery = ecs.query<const Position, const HealAmount>();
+    static auto powerupQuery = ecs.query<const Position, const PowerupAmount>();
+    healQuery.each([&](flecs::entity target_entity, const Position &ppos, const HealAmount &)
+    {
+      const float entityDist = dist(pos, ppos);
+      if (entityDist < closestItemDist) {
+        closestItemDist = entityDist;
+        closestItem = target_entity;
+      }
+    });
+    powerupQuery.each([&](flecs::entity target_entity, const Position &ppos, const PowerupAmount &)
+    {
+      const float entityDist = dist(pos, ppos);
+      if (entityDist < closestItemDist) {
+        closestItemDist = entityDist;
+        closestItem = target_entity;
+      }
+    });
+
     push_info_to_bb(bb, "alliesNum", numAllies);
-    push_info_to_bb(bb, "enemyDist", closestEnemyDist);
+
+    push_info_to_bb(bb, "closest_enemy", closestEnemy);
+    push_info_to_bb(bb, "closest_enemy_dist", closestEnemyDist);
+    push_info_to_bb(bb, "closest_ally", closestAlly);
+    push_info_to_bb(bb, "closest_ally_dist", closestAllyDist);
+    push_info_to_bb(bb, "closest_low_hp_ally", closestLowHpAlly);
+    push_info_to_bb(bb, "closest_low_hp_ally_dist", closestLowHpAllyDist);
+    push_info_to_bb(bb, "closest_item", closestItem);
+    push_info_to_bb(bb, "closest_item_dist", closestItemDist);
   });
+}
+
+void spawn_items(flecs::world &ecs) 
+{
+  const int randomNumber = rand() % 12;
+  const bool spawnPowerup = randomNumber == 0;
+  const bool spawnHeal = randomNumber == 1;
+  
+  const int spawnDist = 10;
+  if (spawnPowerup) {
+    const int randX = (rand() % (spawnDist * 2)) - spawnDist;
+    const int randY = (rand() % (spawnDist * 2)) - spawnDist;
+    create_powerup(ecs, randX, randY, 10.f);
+  } else if (spawnHeal) {
+    const int randX = (rand() % (spawnDist * 2)) - spawnDist;
+    const int randY = (rand() % (spawnDist * 2)) - spawnDist;
+    create_heal(ecs, randX, randY, 50.f);
+  }
 }
 
 void process_turn(flecs::world &ecs)
@@ -386,8 +598,11 @@ void process_turn(flecs::world &ecs)
   static auto stateMachineAct = ecs.query<StateMachine>();
   static auto behTreeUpdate = ecs.query<BehaviourTree, Blackboard>();
   static auto turnIncrementer = ecs.query<TurnCounter>();
+
   if (is_player_acted(ecs))
   {
+    spawn_items(ecs);
+
     if (upd_player_actions_count(ecs))
     {
       // Plan action for NPCs

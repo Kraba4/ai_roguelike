@@ -63,8 +63,10 @@ enum Actions
   EA_MOVE_DOWN,
   EA_MOVE_UP,
   EA_MOVE_END,
-  EA_ATTACK = EA_MOVE_END,
+  EA_AFK,
   EA_HEAL_SELF,
+  EA_HEAL_TARGET,
+  EA_ATTACK = EA_MOVE_END,
   EA_NUM
 };
 
@@ -100,6 +102,7 @@ struct PlayerInput
   bool right = false;
   bool up = false;
   bool down = false;
+  bool space = false;
 };
 
 struct Symbol
@@ -129,3 +132,6 @@ struct ActionLog
   size_t capacity = 5;
 };
 
+struct Collector
+{
+};
