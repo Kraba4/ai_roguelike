@@ -6,9 +6,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <algorithm>
 #include "math.h"
 #include "dungeonGen.h"
 #include "dungeonUtils.h"
+#include "ara.h"
+#include <iostream>
+#include <iomanip>
 
 template<typename T>
 static size_t coord_to_idx(T x, T y, size_t w)
@@ -48,6 +52,15 @@ static std::vector<Position> reconstruct_path(std::vector<Position> prev, Positi
     res.insert(res.begin(), curPos);
   }
   return res;
+}
+
+float calcPathCost(const char *input, size_t width,  const std::vector<Position>& path) {
+  float path_cost = 0;
+  for (int i = 1; i < path.size(); ++i) {
+    float edgeWeight = input[coord_to_idx(path[i].x, path[i].y, width)] == 'o' ? 10.f : 1.f;
+    path_cost += edgeWeight;
+  }
+  return path_cost;
 }
 
 float heuristic(Position lhs, Position rhs)
@@ -114,8 +127,10 @@ static std::vector<Position> find_ida_star_path(const char *input, size_t width,
   return {};
 }
 
+int sum_expanded;
 static std::vector<Position> find_path_a_star(const char *input, size_t width, size_t height, Position from, Position to, float weight)
 {
+  sum_expanded = 0;
   if (from.x < 0 || from.y < 0 || from.x >= int(width) || from.y >= int(height))
     return std::vector<Position>();
   size_t inpSize = width * height;
@@ -177,6 +192,7 @@ static std::vector<Position> find_path_a_star(const char *input, size_t width, s
       if (!found)
         openList.emplace_back(p);
     };
+    sum_expanded += 1;
     checkNeighbour({curPos.x + 1, curPos.y + 0});
     checkNeighbour({curPos.x - 1, curPos.y + 0});
     checkNeighbour({curPos.x + 0, curPos.y + 1});
@@ -186,19 +202,60 @@ static std::vector<Position> find_path_a_star(const char *input, size_t width, s
   return std::vector<Position>();
 }
 
+bool update_log = true; // looks bad but for debug
 void draw_nav_data(const char *input, size_t width, size_t height, Position from, Position to, float weight)
 {
   draw_nav_grid(input, width, height);
   std::vector<Position> path = find_path_a_star(input, width, height, from, to, weight);
   //std::vector<Position> path = find_ida_star_path(input, width, height, from, to);
+  if (update_log) {
+    std::cout << "WA* [path cost = " << calcPathCost(input, width, path) << " sum_expanded = " << sum_expanded << " weight = " << weight << "]\n";
+    update_log = false;
+  }
   draw_path(path);
 }
 
+void draw_nav_data(ARA* ara_pathfinding, const char *input, size_t width, size_t height, Position from, Position to, float weight)
+{
+  draw_nav_grid(input, width, height);
+  std::vector<Position> path = ara_pathfinding->get_path();
+  draw_path(path);
+}
+
+// 99% -> 1.2, 95% -> 1.4, 90% -> 1.7, 75% -> 2.5
+void weight_selection(int num_tests, int num_weights, float step) {
+  std::cout << "Starting weights test...\n";
+  constexpr size_t dungWidth = 100;
+  constexpr size_t dungHeight = 100;
+  std::vector<int> success(num_weights, 0);
+  success[0] = num_tests;
+
+  for (int i = 0; i < num_tests; ++i) {
+    char *navGrid = new char[dungWidth * dungHeight];
+    gen_drunk_dungeon(navGrid, dungWidth, dungHeight, 24, 100, false);
+    spill_drunk_water(navGrid, dungWidth, dungHeight, 8, 10);
+    Position from = dungeon::find_walkable_tile(navGrid, dungWidth, dungHeight);
+    Position to = dungeon::find_walkable_tile(navGrid, dungWidth, dungHeight);
+
+    float correct_answer = calcPathCost(navGrid, dungWidth, find_path_a_star(navGrid, dungWidth, dungHeight, from, to, 1.0f));
+    for (int j = 1; j < num_weights; ++j) {
+        float weight = 1.0f + j * step;
+        float answer = calcPathCost(navGrid, dungWidth, find_path_a_star(navGrid, dungWidth, dungHeight, from, to, weight));
+        if (correct_answer == answer) {
+          ++success[j]; 
+        }
+    }
+  }
+  for (int i = 0; i < num_weights; ++i) {
+    float weight = 1.0f + i * step;
+    std::cout << std::fixed << std::setprecision(2) << "weight = " << weight <<  " success p = " << ((float)success[i]) / num_tests << "\n";
+  }
+}
 int main(int /*argc*/, const char ** /*argv*/)
 {
-  int width = 1920;
-  int height = 1080;
-  InitWindow(width, height, "w3 AI MIPT");
+  int width = 900;
+  int height = 900;
+  InitWindow(width, height, "Pathfinding");
 
   const int scrWidth = GetMonitorWidth(0);
   const int scrHeight = GetMonitorHeight(0);
@@ -223,27 +280,50 @@ int main(int /*argc*/, const char ** /*argv*/)
   //camera.offset = Vector2{ width * 0.5f, height * 0.5f };
   camera.zoom = float(height) / float(dungHeight);
 
+  ARA* ara_pathfinding;
+  float ara_initial_weight = 5;
+  float weight_decrease = 0.5;
+  bool enable_ara = false;
+  auto new_path = [&]()
+  {
+    if (enable_ara) {
+      ara_pathfinding = new ARA(navGrid, dungWidth, dungHeight, from, to, ara_initial_weight, weight_decrease, heuristic);
+      ara_pathfinding->try_improve_path();
+    }
+    update_log = true;
+  };
+
   SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
   while (!WindowShouldClose())
   {
     // pick pos
     Vector2 mousePosition = GetScreenToWorld2D(GetMousePosition(), camera);
     Position p{int(mousePosition.x), int(mousePosition.y)};
+    if (IsKeyPressed(KEY_A))
+    {
+      std::cout << "===================================================\n";
+      enable_ara = !enable_ara;
+      new_path();
+    }
     if (IsMouseButtonPressed(2) || IsKeyPressed(KEY_Q))
     {
       size_t idx = coord_to_idx(p.x, p.y, dungWidth);
-      if (idx < dungWidth * dungHeight)
+      if (idx < dungWidth * dungHeight) {
         navGrid[idx] = navGrid[idx] == ' ' ? '#' : navGrid[idx] == '#' ? 'o' : ' ';
+        new_path();
+      }
     }
     else if (IsMouseButtonPressed(0))
     {
       Position &target = from;
       target = p;
+      new_path();
     }
     else if (IsMouseButtonPressed(1))
     {
       Position &target = to;
       target = p;
+      new_path();
     }
     if (IsKeyPressed(KEY_SPACE))
     {
@@ -251,21 +331,40 @@ int main(int /*argc*/, const char ** /*argv*/)
       spill_drunk_water(navGrid, dungWidth, dungHeight, 8, 10);
       from = dungeon::find_walkable_tile(navGrid, dungWidth, dungHeight);
       to = dungeon::find_walkable_tile(navGrid, dungWidth, dungHeight);
+      new_path();
     }
     if (IsKeyPressed(KEY_UP))
     {
-      weight += 0.1f;
+      weight += 0.5f;
       printf("new weight %f\n", weight);
+      new_path();
     }
     if (IsKeyPressed(KEY_DOWN))
     {
-      weight = std::max(1.f, weight - 0.1f);
+      weight = std::max(1.f, weight - 0.5f);
       printf("new weight %f\n", weight);
+      new_path();
+    }
+    if (IsKeyPressed(KEY_I))
+    {
+      if (enable_ara) {
+        ara_pathfinding->try_improve_path();
+      }
+    }
+    if (IsKeyDown(KEY_TAB)) {
+      weight_selection(1000, 25, 0.1);
     }
     BeginDrawing();
       ClearBackground(BLACK);
       BeginMode2D(camera);
-        draw_nav_data(navGrid, dungWidth, dungHeight, from, to, weight);
+        if (enable_ara) {
+          draw_nav_grid(navGrid, dungWidth, dungHeight);
+          ara_pathfinding->draw_expanded();
+          std::vector<Position> path = ara_pathfinding->get_path();
+          draw_path(path);
+        } else {
+          draw_nav_data(navGrid, dungWidth, dungHeight, from, to, weight);
+        }
       EndMode2D();
     EndDrawing();
   }
