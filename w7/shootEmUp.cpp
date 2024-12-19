@@ -6,6 +6,8 @@
 #include "dungeonGen.h"
 #include "dungeonUtils.h"
 #include "pathfinder.h"
+#include "hierarchicalPathfinder.h"
+#include <iostream>
 
 constexpr float tile_size = 64.f;
 
@@ -23,11 +25,13 @@ static void register_roguelike_systems(flecs::world &ecs)
       vel.y = ((up ? -1.f : 0.f) + (down ? 1.f : 0.f));
       vel = Velocity{normalize(vel) * ms.speed};
     });
+
   ecs.system<Position, const Velocity>()
     .each([&](Position &pos, const Velocity &vel)
     {
       pos += vel * ecs.delta_time();
     });
+
   ecs.system<const Position, const Color>()
     .with<TextureSource>(flecs::Wildcard)
     .with<BackgroundTile>()
@@ -77,6 +81,66 @@ static void register_roguelike_systems(flecs::world &ecs)
         }
       });
     });
+
+  ecs.system<const Camera2D, HierarchicalPathFinder>()
+  .each([&](const Camera2D& camera, HierarchicalPathFinder& h_pathfinder) {
+
+      Vector2 mousePosition = GetScreenToWorld2D(GetMousePosition(), camera);
+      IVec2 p{int(mousePosition.x), int(mousePosition.y)};
+      IVec2 from = h_pathfinder.getStart();
+      IVec2 to = h_pathfinder.getEnd();
+      IVec2 ceil_mouse_pos = IVec2 {(int) (p.x / tile_size), int(p.y / tile_size)};
+      if (IsMouseButtonPressed(0))
+      {
+        from = ceil_mouse_pos;
+      }
+      else if (IsMouseButtonPressed(1))
+      {
+        to = ceil_mouse_pos;
+      }
+      auto dungeonQuery = ecs.query<DungeonPortals, DungeonData>();
+      dungeonQuery.each([&](DungeonPortals &dp, DungeonData &dd) {
+        h_pathfinder.find_path(dp, dd, from, to);
+        std::vector<IVec2> detailed_path = h_pathfinder.get_detailed_path(ceil_mouse_pos, dp, dd);
+        size_t from_i = 0;
+        size_t to_i = 0;
+        for (int i = 1; i < detailed_path.size(); ++i) {
+          from_i = to_i;
+          to_i = i;
+          const IVec2& from = detailed_path[from_i];
+          const IVec2& to   = detailed_path[to_i];
+          Vector2 fromCenter{(from.x + from.x + 1) * tile_size * 0.5f,
+                            (from.y + from.y + 1) * tile_size * 0.5f};
+          Vector2 toCenter{(to.x + to.x + 1) * tile_size * 0.5f,
+                          (to.y + to.y + 1) * tile_size * 0.5f};
+          DrawLineEx(fromCenter, toCenter, 3.f, BLUE);
+        }
+      });
+
+  });
+
+  ecs.system<const DungeonPortals>()
+  .each([&](const DungeonPortals &dp)
+  {
+    auto dungeonQuery = ecs.query<const HierarchicalPathFinder>();
+      dungeonQuery.each([&](const HierarchicalPathFinder &h_pathfinder) {
+      const std::vector<int> &path = h_pathfinder.get_path();
+      size_t from_i = 0;
+      size_t to_i = 0;
+
+      for (int i = 1; i < path.size(); ++i) {
+        from_i = to_i;
+        to_i = i;
+        const PathPortal& from = dp.portals[path[from_i]];
+        const PathPortal& to   = dp.portals[path[to_i]];
+        Vector2 fromCenter{(from.startX + from.endX + 1) * tile_size * 0.5f,
+                          (from.startY + from.endY + 1) * tile_size * 0.5f};
+        Vector2 toCenter{(to.startX + to.endX + 1) * tile_size * 0.5f,
+                        (to.startY + to.endY + 1) * tile_size * 0.5f};
+        DrawLineEx(fromCenter, toCenter, 8.f, BLUE);
+    }
+  });
+  });
 
   ecs.system<const DungeonPortals, const DungeonData>()
     .each([&](const DungeonPortals &dp, const DungeonData &dd)
@@ -182,6 +246,8 @@ void init_dungeon(flecs::world &ecs, char *tiles, size_t w, size_t h)
       else if (tile == dungeon::floor)
         tileEntity.add<TextureSource>(floorTex);
     }
+  ecs.entity("camera")
+  .set(HierarchicalPathFinder{});
   prebuild_map(ecs);
 }
 
