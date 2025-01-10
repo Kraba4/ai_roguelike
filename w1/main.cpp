@@ -17,7 +17,7 @@ static void update_camera(Camera2D &cam, flecs::world &ecs)
 
 int main(int argc, const char **argv)
 {
-  int width = 1920;
+  int width = 1200;
   int height = 1080;
 
   InitWindow(width, height, "w1 AI MIPT");
